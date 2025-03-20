@@ -158,7 +158,14 @@ resource "aws_iam_role_policy_attachment" "codebuild_policy_attachment" {
   policy_arn = aws_iam_policy.codebuild_policy.arn
 }
 
-# Create CodeBuild Project with GitHub authentication
+# Configure GitHub token as a separate resource
+resource "aws_codebuild_source_credential" "github_token" {
+  auth_type   = "PERSONAL_ACCESS_TOKEN"
+  server_type = "GITHUB"
+  token       = var.github_token
+}
+
+# Create CodeBuild Project
 resource "aws_codebuild_project" "app_build" {
   name          = "${var.project_name}-build"
   service_role  = aws_iam_role.codebuild_role.arn
@@ -195,16 +202,29 @@ resource "aws_codebuild_project" "app_build" {
     location        = "https://github.com/${var.github_owner}/${var.github_repo}.git"
     git_clone_depth = 1
     buildspec       = "buildspec.yml"
-    
-    # Add GitHub authentication
-    auth {
-      type     = "OAUTH"
-      resource = var.github_token
-    }
   }
 }
 
-# Create CodeStar connection for GitHub (replacing the deprecated GitHub provider)
+# Create GitHub webhook connection
+resource "aws_codebuild_webhook" "github_webhook" {
+  project_name = aws_codebuild_project.app_build.name
+  
+  filter_group {
+    filter {
+      type    = "EVENT"
+      pattern = "PUSH"
+    }
+
+    filter {
+      type    = "HEAD_REF"
+      pattern = "refs/heads/${var.github_branch}"
+    }
+  }
+
+  depends_on = [aws_codebuild_source_credential.github_token]
+}
+
+# Create CodeStar connection for GitHub (for CodePipeline)
 resource "aws_codestarconnections_connection" "github" {
   name          = "${var.project_name}-github-connection"
   provider_type = "GitHub"
@@ -388,7 +408,7 @@ resource "aws_iam_role_policy_attachment" "codepipeline_policy_attachment" {
   policy_arn = aws_iam_policy.codepipeline_policy.arn
 }
 
-# Create CodePipeline with CodeStar connection (replacing deprecated GitHub provider)
+# Create CodePipeline
 resource "aws_codepipeline" "pipeline" {
   name     = "${var.project_name}-pipeline"
   role_arn = aws_iam_role.codepipeline_role.arn
