@@ -1,4 +1,4 @@
-# Create a VPC (Virtual Private Cloud)
+# Create VPC
 resource "aws_vpc" "main" {
   cidr_block           = "10.0.0.0/16"
   enable_dns_support   = true
@@ -158,7 +158,7 @@ resource "aws_iam_role_policy_attachment" "codebuild_policy_attachment" {
   policy_arn = aws_iam_policy.codebuild_policy.arn
 }
 
-# Create CodeBuild Project
+# Create CodeBuild Project with GitHub authentication
 resource "aws_codebuild_project" "app_build" {
   name          = "${var.project_name}-build"
   service_role  = aws_iam_role.codebuild_role.arn
@@ -195,24 +195,19 @@ resource "aws_codebuild_project" "app_build" {
     location        = "https://github.com/${var.github_owner}/${var.github_repo}.git"
     git_clone_depth = 1
     buildspec       = "buildspec.yml"
+    
+    # Add GitHub authentication
+    auth {
+      type     = "OAUTH"
+      resource = var.github_token
+    }
   }
 }
 
-# Create GitHub Webhook for CodeBuild
-resource "aws_codebuild_webhook" "github_webhook" {
-  project_name = aws_codebuild_project.app_build.name
-  
-  filter_group {
-    filter {
-      type    = "EVENT"
-      pattern = "PUSH"
-    }
-
-    filter {
-      type    = "HEAD_REF"
-      pattern = "refs/heads/${var.github_branch}"
-    }
-  }
+# Create CodeStar connection for GitHub (replacing the deprecated GitHub provider)
+resource "aws_codestarconnections_connection" "github" {
+  name          = "${var.project_name}-github-connection"
+  provider_type = "GitHub"
 }
 
 # Create IAM Role for ECS Task Execution
@@ -375,6 +370,13 @@ resource "aws_iam_policy" "codepipeline_policy" {
           "ecs:RegisterTaskDefinition"
         ]
         Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "codestar-connections:UseConnection"
+        ]
+        Resource = aws_codestarconnections_connection.github.arn
       }
     ]
   })
@@ -386,7 +388,7 @@ resource "aws_iam_role_policy_attachment" "codepipeline_policy_attachment" {
   policy_arn = aws_iam_policy.codepipeline_policy.arn
 }
 
-# Create CodePipeline
+# Create CodePipeline with CodeStar connection (replacing deprecated GitHub provider)
 resource "aws_codepipeline" "pipeline" {
   name     = "${var.project_name}-pipeline"
   role_arn = aws_iam_role.codepipeline_role.arn
@@ -402,16 +404,15 @@ resource "aws_codepipeline" "pipeline" {
     action {
       name             = "Source"
       category         = "Source"
-      owner            = "ThirdParty"
-      provider         = "GitHub"
+      owner            = "AWS"
+      provider         = "CodeStarSourceConnection"
       version          = "1"
       output_artifacts = ["source_output"]
 
       configuration = {
-        Owner      = var.github_owner
-        Repo       = var.github_repo
-        Branch     = var.github_branch
-        OAuthToken = var.github_token
+        ConnectionArn    = aws_codestarconnections_connection.github.arn
+        FullRepositoryId = "${var.github_owner}/${var.github_repo}"
+        BranchName       = var.github_branch
       }
     }
   }
